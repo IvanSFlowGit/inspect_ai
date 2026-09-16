@@ -126,27 +126,31 @@ async def test_model_complexity_rejection_is_incorrect() -> None:
 
 
 @pytest.mark.parametrize(
-    "output",
+    "output,expected_reason",
     [
-        pytest.param("", id="empty_completion"),
+        # SPLIT, previously one case expecting invalid_response_format for both.
+        # A rejected payload IS output: the model produced something and it could
+        # not be parsed, which is a format violation. An empty completion is the
+        # ABSENCE of output and cannot violate a format it never reached.
+        # `_choice.py` already draws this line and says so in its own comment.
+        pytest.param("", "no_response", id="empty_completion"),
         pytest.param(
             "().__class__.__base__.__subclasses__()",
+            "invalid_response_format",
             id="rejected_security_payload",
         ),
     ],
 )
-async def test_parse_failure_records_invalid_response_format(output: str) -> None:
+async def test_parse_failure_records_a_reason(output: str, expected_reason: str) -> None:
     """Record answer-extraction failures in the machine-readable `reason`.
 
     Prose answers compare as text and score plain incorrect, so
     `answer_parse_error` is reserved for output yielding no readable
-    candidate at all (empty completions, rejected payloads). That is a
-    format violation by the model under test: it stays INCORRECT (it must
-    not inflate accuracy by leaving the metric denominator), with `reason`
-    recording the failure mode so analysis can separate "wrong answer" from
-    "couldn't parse an answer". The full completion is surfaced as the
-    answer when no candidate was extracted, per the custom-scorers guidance
-    for extraction scorers.
+    candidate at all. Both cases stay INCORRECT (neither may inflate accuracy
+    by leaving the metric denominator), and `reason` separates them: the model
+    that returned nothing from the model that returned something unusable.
+    The full completion is surfaced as the answer when no candidate was
+    extracted, per the custom-scorers guidance for extraction scorers.
     """
     scorer = math()
     state = simple_task_state(model_output=output)
@@ -154,7 +158,7 @@ async def test_parse_failure_records_invalid_response_format(output: str) -> Non
 
     assert result is not None
     assert result.value == INCORRECT
-    assert result.reason == "invalid_response_format"
+    assert result.reason == expected_reason
     assert result.metadata == {"math_scorer_status": "answer_parse_error"}
     assert result.answer == output
 
@@ -976,3 +980,50 @@ def test_worker_context_resets_across_event_loops(
 
     anyio.run(run_once)
     anyio.run(run_once)
+
+
+@pytest.mark.parametrize("completion", ["", "   ", "\n\t ", "\xa0"])
+async def test_empty_completion_is_no_response_not_a_format_violation(
+    completion: str,
+) -> None:
+    # An empty completion never produced output that could violate a format.
+    # Before this it was the only input reaching answer_parse_error alongside
+    # punctuation like "((((", and the two reported identically, so filtering a
+    # log on invalid_response_format returned the silent samples.
+    scorer = math()
+    state = simple_task_state(model_output=completion)
+    result = await scorer(state, Target(["42"]))
+    assert result is not None
+    assert result.reason == "no_response"
+    # The VALUE does not move. Changing it would shift accuracy on every
+    # existing math eval, which is a scoring decision rather than a labelling one.
+    assert result.value == INCORRECT
+
+
+@pytest.mark.parametrize("completion", ["((((", "$$$$", "...", "=", "%%%"])
+async def test_unparseable_non_empty_stays_invalid_response_format(
+    completion: str,
+) -> None:
+    # The discriminating half. Without these a change that tagged every
+    # answer_parse_error as no_response would pass the suite above, because
+    # empty and punctuation take the same branch.
+    scorer = math()
+    state = simple_task_state(model_output=completion)
+    result = await scorer(state, Target(["42"]))
+    assert result is not None
+    assert result.reason == "invalid_response_format"
+
+
+@pytest.mark.parametrize(
+    "completion,expected",
+    [("The answer is $42$", CORRECT), ("The answer is $7$", INCORRECT)],
+)
+async def test_scored_answers_carry_no_reason(completion: str, expected: str) -> None:
+    # Controls. A graded answer is a verdict, not an abnormality, so tagging
+    # everything would break these.
+    scorer = math()
+    state = simple_task_state(model_output=completion)
+    result = await scorer(state, Target(["42"]))
+    assert result is not None
+    assert result.value == expected
+    assert result.reason is None

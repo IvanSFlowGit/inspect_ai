@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Scoring: `math()` now records `reason="no_response"` when the model completion is empty or whitespace only, instead of `invalid_response_format`. An empty completion produced nothing that could violate a format; non-empty output that yields no readable answer still records `invalid_response_format`. Score values are unchanged. (#5441)
 - Anthropic: `cache_ttl` now defaults to "auto", which switches a sample's prompt-cache TTL from 5 minutes to 1 hour after a >5 minute gap between its requests; pass "5m" or "1h" to pin.
 - Hugging Face `literal:` task targets now keep the rest of the value when it contains additional colons.
 - Review: `human_reviewer()` lets an operator review a tool call together with its result and continue or terminate the sample, on the same surfaces as the human approver.

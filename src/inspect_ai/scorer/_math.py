@@ -1366,17 +1366,35 @@ def math(*, timeout: float = _DEFAULT_TIMEOUT_SECONDS) -> Scorer:
         # answer" from "couldn't parse an answer". The completion is surfaced
         # as the answer when no candidate was extracted, per the custom-scorers
         # guidance for extraction scorers.
+        #
+        # AN EMPTY COMPLETION IS NOT A FORMAT VIOLATION. It never produced output
+        # that could violate one, so it is `no_response`. Before this, an empty
+        # completion was the only thing reaching `answer_parse_error` alongside
+        # punctuation such as "((((", and the two were reported identically.
+        # `_choice.py` already draws exactly this line and states it in its own
+        # comment: "An empty completion means there is nothing to grade; any
+        # other completion without a selected choice means the model did not
+        # follow the requested ANSWER format."
+        #
+        # THE VALUE IS DELIBERATELY UNCHANGED. `_choice.py` uses NOANSWER for its
+        # empty case, but math() has always returned INCORRECT here and moving it
+        # would change accuracy on every existing math eval. That is a scoring
+        # decision rather than a labelling one, so it is left alone and raised in
+        # the issue instead.
+        empty = not (state.output.completion or "").strip()
         return Score(
             value=INCORRECT,
             answer=result.answer
             if result.answer is not None
             else state.output.completion,
             explanation=(
-                f"Could not parse mathematical answer: {result.reason}."
+                "The model returned no output to score."
+                if empty
+                else f"Could not parse mathematical answer: {result.reason}."
                 if result.status == "answer_parse_error"
                 else f"Mathematical answer exceeded a complexity limit: {result.reason}."
             ),
-            reason="invalid_response_format",
+            reason="no_response" if empty else "invalid_response_format",
             metadata=_status_metadata(result.status),
         )
 
